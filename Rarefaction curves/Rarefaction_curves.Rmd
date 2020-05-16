@@ -1,0 +1,180 @@
+---
+title: "Rarefaction and ASV accumulation plots"
+author: "Alice Risely"
+date: "16/05/2020"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(phyloseq)
+library(ggplot2)
+library(vegan)
+library(directlabels)
+library(gridExtra)
+library(dplyr)
+
+setwd("C:\\Users\\risel\\Dropbox\\Sommer postdoc\\PHYLOSEQ OBJECTS\\Rarefaction curves")
+
+
+```
+
+**Aim of analysis**  
+
+This code works with a phyloseq object to generate plots that show rarefaction curves (ASV richness with increasing sequencing depth) and ASV accumulation curves (ASV richness with increasing sampling effort). The first shows whether the sequencing depth was sufficient to capture most ASVs in the sample, whilst the second assesses whether the sample size (per group) was sufficient to capture most ASVs within the host population. This is important information and should be explored! In this case, we load a phyloseq object that containts ASV data for eight vertebrate species, and I want to generate raefaction and accumulation curves per species. In other instances you will want to replace species with your group of interest (e.g. site or treatment group).
+
+This is the figure we will generate:
+
+![](final_fig.png)
+
+
+
+**Load data in the form of Phyloseq object**  
+
+```{r}
+merged_8species<-readRDS( "C:\\Users\\risel\\Dropbox\\Sommer postdoc\\PHYLOSEQ OBJECTS\\Rarefaction curves\\merged_8species_unrarefied")
+
+merged_8species
+
+```
+
+
+**Rarefaction plot**  
+
+Use the ggrare() function from the ranacapa package
+
+```{r ggplot figure 1, results = "hide"}
+
+
+rarefaction_fig <- ranacapa::ggrare(merged_8species, step = 500,   se = FALSE)+ 
+  xlim(c(0,50000))+ 
+  facet_wrap(~Species, scales="free_y", ncol=4)+
+  geom_vline(xintercept=10000)+ #I've highlighted 10,000 because that is where I will rarefy it to later
+  theme_bw()+
+  theme(legend.position = "none")+
+  geom_line(aes(col=Species))+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  theme(text=element_text(size=14))+
+  ylab("Number of ASVs")+
+  xlab("Number of reads")+
+  scale_color_brewer(palette = "Dark2")+
+  ggtitle("Rarefaction curves with sequencing depth")
+
+```
+
+```{r}
+rarefaction_fig
+```
+
+
+Above is the bog standard plot you get with all samples shown together (which is automatically generated with ggrare()), but the object 'rarefaction_fig' is the final rarefaction figure.
+
+**ASV accumulation plot**  
+
+This plot is a bit more complex to code, because you want to treat each species seperately. For the rarefaction figure above, each sample is treated seperately and it doesn't matter which species it belongs to. Because I have eight species I want to repeat this for, it is easier to create a loop and that do them all manually.
+
+The next step codes the for loop, where data for each species is subsetted in turn and an ASV accumulation curves is calculated for each, using vegan's specaccum() function. This randomly picks out samples and calculated how many new ASVs are each added to the total pool each time. We repeat this 500 times so that any biases in sample order are overcome.
+
+In addition, the second part of the loop is estimating the total number of ASVs in the ASV pool; Ie, it extrapolates the curve to calculate how many ASVs we've probably missed had we sampled more. This is important to demonstrate our sample sizes are high enough to capture most of the AVS within the host population.
+
+
+```{r generate ASV accumulation data, results = "hide"}
+
+SAClist<-list() #make an enpty list
+
+uniq <- unique(sample_data(merged_8species)$Species) # make a list of species to subset sequentially
+
+for (i in 1:length(uniq)){ #for species i
+  
+  data_1<-subset_samples(merged_8species, Species == uniq[i]) #subset the phyloseq object for species i
+  data_1<-prune_taxa(taxa_sums(data_1)>0, data_1)  #remove any traces of taxa that are no longer present in dataset
+  data_1_matrix<-data.frame(t(data.frame(otu_table(data_1)))) #transpose the OTU table
+  data_1_specaccum<-vegan::specaccum(data_1_matrix, method="random", permutations = 500) #apply specaccum()
+  
+  ## the output is in list form, so we need to make this into a dataframe
+  
+  sac_df<- data_1_specaccum$sites ##sites = samples
+  sac_df<-data.frame(sac_df)
+  names(sac_df)[1]<-"Site" 
+  sac_df$Richness <-  data_1_specaccum$richness #import ASV richness to dataframe
+  sac_df$SD <-  data_1_specaccum$sd #import the standard deviation
+  
+  ## this next step estimates the TOTAL number of ASVs in the ASV pool. 
+  
+  sac_total_estimated<-vegan::specpool(data_1_matrix) #estimates total ASV pool from our otu matrix geenrated above
+  sac_df$Total <- sac_total_estimated$boot ##add this to our dataframe
+  sac_df$Species <- as.character(sample_data(data_1)$Species[1]) #add species name, for when we combine dataframes for all species
+  SAClist[[i]]<-sac_df #add this dataframe as an element in the empty list and repeat for the next species
+  
+}
+
+```
+
+Now lets look at our final list and combine all those dataframes:
+
+```{r Combine dataframes}
+
+names(SAClist)<-uniq #name elements of the list by species
+str(SAClist)
+
+sac_df_all<-do.call(rbind, SAClist) #rbind all our 8 dataframes together
+
+head(sac_df_all) #final dataframe we use to generate the second figure
+
+```
+
+We could plot the ASV acculumation curves now, but I want to include the the total estimated ASV pool in the figure too, to show that our sample sizes for each species have sufficiently captured almost all ASVs in the host population. TO do this, I just add 8 extra lines to the data frame, withe the species total 
+
+```{r Add estimated totals to dataframe}
+
+
+species_totals<-sac_df_all %>% distinct(Total, .keep_all = T) #subset just the eight distinct estimated totals per species
+
+species_totals[,1]<-400 #here we put 400 just because we want a number that is larger than the largest samples size (flamingo)
+species_totals[,2]<-species_totals$Total
+species_totals[,3]<-NA
+species_totals[,4]<-NA
+
+head(species_totals)
+
+sac_df_fig<-rbind(sac_df_all, species_totals) #combine
+
+```
+
+**Second figure**
+
+Here I've also generated the subplot in the opening figure to show in more the rate of ASV accumulation over the first 50 samples randomly selected. It is optional! 
+
+```{r}
+#subplot
+
+sub<-ggplot(sac_df_fig, aes(x = Site, y = Richness, group = Species))+geom_line(alpha=0.7, linetype = "dashed")+
+  geom_point( aes(col=Species), size = 1)+theme_bw()+
+  xlab("Number of individuals sampled")+
+  ylab("Number of ASVs")+
+  theme(text=element_text(size=14))+
+  theme(axis.title.x=element_blank(),axis.title.y=element_blank())+
+  theme(legend.position = "none")+ scale_color_brewer(palette = "Dark2")+
+  ylim(c(0,3000))+xlim(c(0,50))
+
+
+#main plot
+
+sac_fig<-ggplot(sac_df_fig, aes(x = Site, y = Richness, group = Species))+
+  geom_line(alpha=0.7, linetype = "dashed")+
+  geom_point( aes(col=Species), size = 2, alpha = 0.5)+theme_bw()+
+  xlab("Number of individuals sampled")+
+  ylab("Number of ASVs")+
+  theme(text=element_text(size=14))+
+  theme(legend.position = "none")+ 
+  scale_color_brewer(palette = "Dark2")+
+  annotation_custom(ggplotGrob(sub), xmin = 150, xmax=400, ymin = 3500, ymax = 6000)+
+  geom_dl(aes(label = Species), method = list("last.points", cex = 0.8, vjust = -0.4, hjust = 1))+
+  ggtitle("ASV accumulation curves with sample size")
+
+sac_fig
+
+```
